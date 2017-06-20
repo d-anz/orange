@@ -115,18 +115,67 @@ return function(plugin)
         POST = function(store)
             return function(req, res, next)
                 local load_success = dao.load_data_by_mysql(store, plugin)
-                if load_success then
-                    return res:json({
-                        success = true,
-                        msg = "succeed to load config from store"
-                    })
-                else
+
+                if not load_success then
+
                     ngx.log(ngx.ERR, "error to load plugin[" .. plugin .. "] config from store")
+
                     return res:json({
                         success = false,
                         msg = "error to load config from store"
                     })
+
                 end
+
+                local config = context.config
+                local api_multi_server_config = config.api.multi_server
+
+                local local_server_credentials = config and config.api and config.api.credentials[1]
+                local local_server_auth_enable = config and config.api and config.api.auth_enable
+
+                if api_multi_server_config and  api_multi_server_config.enable and not req.query.syncd  then
+
+                    local http = require "resty.http"
+                    local httpc = http.new()
+
+                    for _,s in ipairs(api_multi_server_config.servers) do
+                        local uri = 'http://'.. s.host ..':'.. s.port .. req.uri..'?syncd=1'
+
+                        ngx.log(ngx.INFO,"[SYNC CONFIG][HTTP_URI]",uri)
+
+                        local headers = {}
+                        local auth_enable = s.auth_enable ~= nil and  s.auth_enable or local_server_auth_enable
+                        if auth_enable  then
+                            local credential = s.credential ~= nil and s.credential or local_server_credentials
+                            if not credential or not credential.username or not credential.password then
+                                return res:json({
+                                    success = false,
+                                    msg = "error to load config from orange.conf, credential config not found "
+                                })
+                            end
+                            headers["Authorization"] = ngx.encode_base64(string.format("%s:%s", credential.username, credential.password))
+                        end
+
+                        local r,err = httpc:request_uri(uri,{
+                            method="POST",
+                            body = req.body,
+                            headers=headers
+                        })
+
+                        if not r  or 200 ~= r.status then
+                            return res:json({
+                                success = false,
+                                msg = "http request [" .. uri ..  "] fail, err:" .. (err or r.status)
+                            })
+                        end
+                    end
+
+                end
+
+                return res:json({
+                    success = true,
+                    msg = "succeed to load config from store"
+                })
             end
         end
     }
